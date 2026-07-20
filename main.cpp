@@ -6,8 +6,9 @@
 #include "Portal.h"
 #include "pathsmooth.h"
 #include "Metrics.h"
+#include "JsonExport.h"
 
-void RunCorridor(const char* corridorName, const Vec2& start, const Vec2& goal, const std::vector<Portal>& portals) {
+CorridorResult RunCorridor(const char* corridorName, const Vec2& start, const Vec2& goal, const std::vector<Portal>& portals) {
     using Clock = std::chrono::high_resolution_clock;
 
     printf("=========================================\n");
@@ -33,9 +34,21 @@ void RunCorridor(const char* corridorName, const Vec2& start, const Vec2& goal, 
     printf("  Funnel:      %.2f us\n", std::chrono::duration<double, std::micro>(t1 - t0).count());
     printf("  RubberBand:  %.2f us\n", std::chrono::duration<double, std::micro>(t2 - t1).count());
     printf("  CatmullRom:  %.2f us\n\n", std::chrono::duration<double, std::micro>(t3 - t2).count());
+
+    CorridorResult result;
+    result.name = corridorName;
+    result.start = start;
+    result.goal = goal;
+    result.portals = portals;
+    result.funnelPath = funnelPath;
+    result.rubberPath = rubberPath;
+    result.splinePath = splinePath;
+    return result;
 }
 
 int main() {
+    std::vector<CorridorResult> allResults;
+
     // ---------------------------------------------------------------
     // Corridor 1: gentle bent hallway (original test case).
     // ---------------------------------------------------------------
@@ -48,7 +61,7 @@ int main() {
             { {5.0f, 5.0f}, {5.0f, 1.0f} },
             { {7.0f, 7.0f}, {7.0f, 2.0f} },
         };
-        RunCorridor("Gentle bend", start, goal, portals);
+        allResults.push_back(RunCorridor("Gentle bend", start, goal, portals));
     }
 
     // ---------------------------------------------------------------
@@ -67,7 +80,7 @@ int main() {
             { {4.0f, -1.0f}, {4.0f, -0.5f} },
             { {5.0f, 0.5f}, {5.0f, 0.0f} },
         };
-        RunCorridor("Sharp zigzag (S-curve)", start, goal, portals);
+        allResults.push_back(RunCorridor("Sharp zigzag (S-curve)", start, goal, portals));
 
         printf("Portal bounds for corridor 2 (for checking spline overshoot):\n");
         for (size_t i = 0; i < portals.size(); ++i) {
@@ -75,6 +88,9 @@ int main() {
                 i, portals[i].left.x, portals[i].left.y, portals[i].right.x, portals[i].right.y);
         }
     }
+
+    ExportToJSON("paths.json", allResults);
+    printf("\nExported path data to paths.json -- open index.html to view it.\n");
 
     return 0;
 }

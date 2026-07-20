@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Path Smoothing Comparison — Nav Mesh Funnel / Rubber-Band / Catmull-Rom</title>
+<style>
+  :root {
+    --bg: #14161a;
+    --panel: #1c1f26;
+    --line: #2a2e37;
+    --text: #e7e9ee;
+    --muted: #8b93a3;
+    --wall: #4c525f;
+    --funnel: #ff8a4c;
+    --rubber: #5ec8ff;
+    --spline: #ff5c8a;
+    --point: #ffffff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 16px 48px;
+  }
+  h1 {
+    font-size: 20px;
+    font-weight: 600;
+    margin: 0 0 4px;
+  }
+  p.sub {
+    color: var(--muted);
+    font-size: 14px;
+    margin: 0 0 20px;
+  }
+  .controls {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .controls button {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    color: var(--text);
+    padding: 8px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .controls button.active {
+    border-color: var(--funnel);
+    color: var(--funnel);
+  }
+  .stage {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px;
+  }
+  canvas {
+    display: block;
+    background: #101216;
+    border-radius: 6px;
+  }
+  .legend {
+    display: flex;
+    gap: 20px;
+    margin-top: 14px;
+    flex-wrap: wrap;
+    justify-content: center;
+    font-size: 13px;
+  }
+  .legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .swatch {
+    width: 16px;
+    height: 3px;
+    border-radius: 2px;
+    display: inline-block;
+  }
+  .swatch.wall { background: var(--wall); height: 2px; }
+  .swatch.funnel { background: var(--funnel); }
+  .swatch.rubber { background: var(--rubber); }
+  .swatch.spline { background: var(--spline); }
+
+  table.metrics {
+    margin-top: 20px;
+    border-collapse: collapse;
+    font-size: 13px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  table.metrics th, table.metrics td {
+    padding: 8px 16px;
+    text-align: left;
+    border-bottom: 1px solid var(--line);
+  }
+  table.metrics th { color: var(--muted); font-weight: 500; }
+  table.metrics tr:last-child td { border-bottom: none; }
+
+  #status {
+    color: var(--muted);
+    font-size: 13px;
+    margin-top: 16px;
+    text-align: center;
+    max-width: 480px;
+  }
+</style>
+</head>
+<body>
+
+  <h1>Path Smoothing Comparison</h1>
+  <p class="sub">Funnel (string-pulling) vs. rubber-banding vs. Catmull-Rom spline, on a triangulated nav-mesh corridor.</p>
+
+  <div class="controls" id="corridorButtons"></div>
+
+  <div class="stage">
+    <canvas id="canvas" width="900" height="560"></canvas>
+  </div>
+
+  <div class="legend">
+    <span><span class="swatch wall"></span>Corridor walls</span>
+    <span><span class="swatch funnel"></span>Funnel</span>
+    <span><span class="swatch rubber"></span>Rubber-banding</span>
+    <span><span class="swatch spline"></span>Catmull-Rom</span>
+  </div>
+
+  <table class="metrics" id="metricsTable"></table>
+
+  <div id="status">Loading paths.json …</div>
+
+<script>
+let corridors = [];
+let activeIndex = 0;
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+
+function pathLength(pts) {
+  let len = 0;
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const dx = pts[i+1][0] - pts[i][0];
+    const dy = pts[i+1][1] - pts[i][1];
+    len += Math.hypot(dx, dy);
+  }
+  return len;
+}
+
+function turnCount(pts, thresholdDeg = 5) {
+  if (pts.length < 3) return 0;
+  let turns = 0;
+  const thresholdRad = thresholdDeg * Math.PI / 180;
+  for (let i = 1; i + 1 < pts.length; i++) {
+    const ax = pts[i][0] - pts[i-1][0], ay = pts[i][1] - pts[i-1][1];
+    const bx = pts[i+1][0] - pts[i][0], by = pts[i+1][1] - pts[i][1];
+    const lenA = Math.hypot(ax, ay), lenB = Math.hypot(bx, by);
+    if (lenA < 1e-6 || lenB < 1e-6) continue;
+    let dot = (ax*bx + ay*by) / (lenA*lenB);
+    dot = Math.max(-1, Math.min(1, dot));
+    if (Math.acos(dot) > thresholdRad) turns++;
+  }
+  return turns;
+}
+
+// Fit world-space points into the canvas with a margin, y-flipped
+// (screen y grows down, our path data uses y grows up).
+function computeTransform(corridor) {
+  const allPts = [
+    corridor.start, corridor.goal,
+    ...corridor.portals.flat(),
+    ...corridor.funnelPath, ...corridor.rubberPath, ...corridor.splinePath
+  ];
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const [x, y] of allPts) {
+    minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+  }
+  const margin = 60;
+  const w = canvas.width - margin * 2;
+  const h = canvas.height - margin * 2;
+  const spanX = Math.max(maxX - minX, 0.001);
+  const spanY = Math.max(maxY - minY, 0.001);
+  const scale = Math.min(w / spanX, h / spanY);
+
+  return (pt) => {
+    const x = margin + (pt[0] - minX) * scale + (w - spanX * scale) / 2;
+    const y = canvas.height - (margin + (pt[1] - minY) * scale + (h - spanY * scale) / 2);
+    return [x, y];
+  };
+}
+
+function drawPath(pts, transform, color, width, dashed) {
+  if (pts.length < 2) return;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.setLineDash(dashed ? [6, 5] : []);
+  ctx.beginPath();
+  const [sx, sy] = transform(pts[0]);
+  ctx.moveTo(sx, sy);
+  for (let i = 1; i < pts.length; i++) {
+    const [x, y] = transform(pts[i]);
+    ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function drawPoints(pts, transform, color, radius) {
+  ctx.fillStyle = color;
+  for (const p of pts) {
+    const [x, y] = transform(p);
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function render() {
+  const corridor = corridors[activeIndex];
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const transform = computeTransform(corridor);
+
+  // Corridor walls: chain the left edges together, and the right edges
+  // together, from start through each portal to goal.
+  const leftWall = [corridor.start, ...corridor.portals.map(p => p[0]), corridor.goal];
+  const rightWall = [corridor.start, ...corridor.portals.map(p => p[1]), corridor.goal];
+  drawPath(leftWall, transform, getComputedStyle(document.documentElement).getPropertyValue('--wall'), 2, false);
+  drawPath(rightWall, transform, getComputedStyle(document.documentElement).getPropertyValue('--wall'), 2, false);
+
+  // Portal rungs (the crossing edges themselves), faint.
+  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  ctx.lineWidth = 1;
+  for (const [l, r] of corridor.portals) {
+    const [lx, ly] = transform(l);
+    const [rx, ry] = transform(r);
+    ctx.beginPath();
+    ctx.moveTo(lx, ly);
+    ctx.lineTo(rx, ry);
+    ctx.stroke();
+  }
+
+  const funnelColor = getComputedStyle(document.documentElement).getPropertyValue('--funnel');
+  const rubberColor = getComputedStyle(document.documentElement).getPropertyValue('--rubber');
+  const splineColor = getComputedStyle(document.documentElement).getPropertyValue('--spline');
+
+  drawPath(corridor.splinePath, transform, splineColor, 2.5, true);
+  drawPath(corridor.rubberPath, transform, rubberColor, 2.5, false);
+  drawPath(corridor.funnelPath, transform, funnelColor, 3, false);
+
+  drawPoints(corridor.funnelPath, transform, funnelColor, 4);
+  drawPoints(corridor.rubberPath, transform, rubberColor, 3);
+
+  // Start / goal markers.
+  const point = getComputedStyle(document.documentElement).getPropertyValue('--point');
+  ctx.fillStyle = point;
+  for (const p of [corridor.start, corridor.goal]) {
+    const [x, y] = transform(p);
+    ctx.beginPath();
+    ctx.arc(x, y, 5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  renderMetrics(corridor);
+}
+
+function renderMetrics(corridor) {
+  const rows = [
+    ['Funnel', corridor.funnelPath],
+    ['Rubber-band', corridor.rubberPath],
+    ['Catmull-Rom', corridor.splinePath],
+  ];
+  const table = document.getElementById('metricsTable');
+  table.innerHTML = `
+    <tr><th>Method</th><th>Points</th><th>Length</th><th>Turns</th></tr>
+    ${rows.map(([name, pts]) => `
+      <tr>
+        <td>${name}</td>
+        <td>${pts.length}</td>
+        <td>${pathLength(pts).toFixed(3)}</td>
+        <td>${turnCount(pts)}</td>
+      </tr>
+    `).join('')}
+  `;
+}
+
+function buildButtons() {
+  const container = document.getElementById('corridorButtons');
+  container.innerHTML = '';
+  corridors.forEach((c, i) => {
+    const btn = document.createElement('button');
+    btn.textContent = c.name;
+    if (i === activeIndex) btn.classList.add('active');
+    btn.onclick = () => {
+      activeIndex = i;
+      buildButtons();
+      render();
+    };
+    container.appendChild(btn);
+  });
+}
+
+fetch('paths.json')
+  .then(r => {
+    if (!r.ok) throw new Error('paths.json not found next to this HTML file');
+    return r.json();
+  })
+  .then(data => {
+    corridors = data;
+    statusEl.textContent = '';
+    buildButtons();
+    render();
+  })
+  .catch(err => {
+    statusEl.textContent = 'Could not load paths.json — run your C++ program first so it writes paths.json into this same folder, then reload this page. (' + err.message + ')';
+  });
+</script>
+</body>
+</html>
