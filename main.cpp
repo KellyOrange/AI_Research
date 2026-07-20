@@ -5,10 +5,12 @@
 #include "Vec2.h"
 #include "Portal.h"
 #include "pathsmooth.h"
-#include "Metrics.h"
-#include "JsonExport.h"
+#include "metrics.h"
+#include "jsonExport.h"
+#include "navMesh.h"
 
-CorridorResult RunCorridor(const char* corridorName, const Vec2& start, const Vec2& goal, const std::vector<Portal>& portals) {
+CorridorResult RunCorridor(const char* corridorName, const Vec2& start, const Vec2& goal,
+                            const std::vector<Portal>& portals, const std::vector<Rect>& obstacles = {}) {
     using Clock = std::chrono::high_resolution_clock;
 
     printf("=========================================\n");
@@ -40,9 +42,14 @@ CorridorResult RunCorridor(const char* corridorName, const Vec2& start, const Ve
     result.start = start;
     result.goal = goal;
     result.portals = portals;
+    result.rawPath = rawPath;
     result.funnelPath = funnelPath;
     result.rubberPath = rubberPath;
     result.splinePath = splinePath;
+    result.obstacles = obstacles;
+    result.funnelTimeUs = std::chrono::duration<double, std::micro>(t1 - t0).count();
+    result.rubberTimeUs = std::chrono::duration<double, std::micro>(t2 - t1).count();
+    result.splineTimeUs = std::chrono::duration<double, std::micro>(t3 - t2).count();
     return result;
 }
 
@@ -86,6 +93,50 @@ int main() {
         for (size_t i = 0; i < portals.size(); ++i) {
             printf("  portal %zu: left=(%.2f,%.2f) right=(%.2f,%.2f)\n",
                 i, portals[i].left.x, portals[i].left.y, portals[i].right.x, portals[i].right.y);
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Corridor 3: REAL generated level. A grid nav mesh is built from
+    // obstacle rectangles, A* finds a triangle path across it, and the
+    // real portal sequence crossed is extracted -- fed into the exact
+    // same Funnel/RubberBand/CatmullRom functions as the hand-built
+    // corridors above. This is the actual demo pipeline end-to-end.
+    // ---------------------------------------------------------------
+    {
+        float levelWidth = 20.0f, levelHeight = 14.0f, cellSize = 1.0f;
+
+        // Narrow corridor near the start, a big OPEN ROOM in the middle
+        // (no obstacles at all there), then another narrow corridor near
+        // the goal. This contrast is the point: the funnel algorithm
+        // should zigzag through the narrow sections (no room to cut
+        // corners) but cut a clean diagonal shortcut through the open
+        // room, while rubber-band/spline behave similarly in both.
+        std::vector<Rect> obstacles = {
+            { 3.0f, 0.0f, 4.0f, 9.0f },    // narrow corridor wall near start
+            { 16.0f, 5.0f, 17.0f, 14.0f }, // narrow corridor wall near goal
+        };
+
+        NavMesh mesh = BuildGridNavMesh(levelWidth, levelHeight, cellSize, obstacles);
+
+        Vec2 start = { 1.0f, 1.0f };
+        Vec2 goal  = { 18.0f, 12.0f };
+
+        int startTri = FindTriangleContaining(mesh, start);
+        int goalTri = FindTriangleContaining(mesh, goal);
+
+        if (startTri == -1 || goalTri == -1) {
+            printf("Corridor 3: start or goal point is not on the nav mesh (inside an obstacle?)\n");
+        } else {
+            std::vector<int> triPath = FindTrianglePath(mesh, startTri, goalTri);
+            if (triPath.empty()) {
+                printf("Corridor 3: A* found no path between start and goal.\n");
+            } else {
+                std::vector<Portal> portals = ExtractPortals(mesh, triPath, start);
+                printf("Corridor 3: nav mesh has %zu triangles, A* path crosses %zu triangles / %zu portals\n\n",
+                    mesh.triangles.size(), triPath.size(), portals.size());
+                allResults.push_back(RunCorridor("Generated level (real nav mesh + A*)", start, goal, portals, obstacles));
+            }
         }
     }
 

@@ -11,10 +11,12 @@
     --text: #e7e9ee;
     --muted: #8b93a3;
     --wall: #4c525f;
+    --raw: #b8bfcc;
     --funnel: #ff8a4c;
     --rubber: #5ec8ff;
     --spline: #ff5c8a;
     --point: #ffffff;
+    --agent: #7cff8a;
   }
   * { box-sizing: border-box; }
   body {
@@ -40,7 +42,7 @@
   .controls {
     display: flex;
     gap: 10px;
-    margin-bottom: 16px;
+    margin-bottom: 12px;
     flex-wrap: wrap;
     justify-content: center;
   }
@@ -56,6 +58,12 @@
   .controls button.active {
     border-color: var(--funnel);
     color: var(--funnel);
+  }
+  .controls.methods button.active { border-color: var(--agent); color: var(--agent); }
+  .controls button.play {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
   }
   .stage {
     background: var(--panel);
@@ -88,9 +96,11 @@
     display: inline-block;
   }
   .swatch.wall { background: var(--wall); height: 2px; }
+  .swatch.raw { background: var(--raw); height: 2px; }
   .swatch.funnel { background: var(--funnel); }
   .swatch.rubber { background: var(--rubber); }
   .swatch.spline { background: var(--spline); }
+  .swatch.agent { background: var(--agent); border-radius: 50%; width: 10px; height: 10px; }
 
   table.metrics {
     margin-top: 20px;
@@ -108,6 +118,7 @@
   }
   table.metrics th { color: var(--muted); font-weight: 500; }
   table.metrics tr:last-child td { border-bottom: none; }
+  table.metrics tr.highlight td { color: var(--agent); }
 
   #status {
     color: var(--muted);
@@ -121,9 +132,11 @@
 <body>
 
   <h1>Path Smoothing Comparison</h1>
-  <p class="sub">Funnel (string-pulling) vs. rubber-banding vs. Catmull-Rom spline, on a triangulated nav-mesh corridor.</p>
+  <p class="sub">Raw nav-mesh path vs. funnel (string-pulling) vs. rubber-banding vs. Catmull-Rom spline.</p>
 
   <div class="controls" id="corridorButtons"></div>
+  <div class="controls methods" id="methodButtons"></div>
+  <div class="controls" id="playButtons"></div>
 
   <div class="stage">
     <canvas id="canvas" width="900" height="560"></canvas>
@@ -131,9 +144,11 @@
 
   <div class="legend">
     <span><span class="swatch wall"></span>Corridor walls</span>
+    <span><span class="swatch raw"></span>Raw path</span>
     <span><span class="swatch funnel"></span>Funnel</span>
     <span><span class="swatch rubber"></span>Rubber-banding</span>
     <span><span class="swatch spline"></span>Catmull-Rom</span>
+    <span><span class="swatch agent"></span>Agent</span>
   </div>
 
   <table class="metrics" id="metricsTable"></table>
@@ -143,6 +158,21 @@
 <script>
 let corridors = [];
 let activeIndex = 0;
+let activeMethod = 'all'; // 'raw' | 'funnel' | 'rubber' | 'spline' | 'all'
+
+// Agent animation state.
+let agentT = 0;          // 0..1 progress along the active method's path
+let agentPlaying = false;
+let lastFrameTime = null;
+const AGENT_SPEED_UNITS_PER_SEC = 4; // world-space units per second
+
+const METHODS = [
+  { key: 'raw',    label: 'Raw',         field: 'rawPath',    color: '--raw',    width: 2,   dashed: true  },
+  { key: 'funnel', label: 'Funnel',      field: 'funnelPath', color: '--funnel', width: 3,   dashed: false },
+  { key: 'rubber', label: 'Rubber-band', field: 'rubberPath', color: '--rubber', width: 2.5, dashed: false },
+  { key: 'spline', label: 'Catmull-Rom', field: 'splinePath', color: '--spline', width: 2.5, dashed: true  },
+  { key: 'all',    label: 'All' },
+];
 
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
@@ -174,13 +204,35 @@ function turnCount(pts, thresholdDeg = 5) {
   return turns;
 }
 
+// Walk a fraction t (0..1) of the way along a polyline's arc length,
+// returning the interpolated point. Used to move the agent smoothly.
+function pointAtFraction(pts, t) {
+  if (pts.length === 0) return null;
+  if (pts.length === 1) return pts[0];
+  const total = pathLength(pts);
+  if (total <= 1e-9) return pts[0];
+  let target = Math.max(0, Math.min(1, t)) * total;
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const dx = pts[i+1][0] - pts[i][0];
+    const dy = pts[i+1][1] - pts[i][1];
+    const segLen = Math.hypot(dx, dy);
+    if (target <= segLen || i + 2 === pts.length) {
+      const frac = segLen > 1e-9 ? target / segLen : 0;
+      return [pts[i][0] + dx * Math.min(frac, 1), pts[i][1] + dy * Math.min(frac, 1)];
+    }
+    target -= segLen;
+  }
+  return pts[pts.length - 1];
+}
+
 // Fit world-space points into the canvas with a margin, y-flipped
 // (screen y grows down, our path data uses y grows up).
 function computeTransform(corridor) {
   const allPts = [
     corridor.start, corridor.goal,
     ...corridor.portals.flat(),
-    ...corridor.funnelPath, ...corridor.rubberPath, ...corridor.splinePath
+    ...corridor.rawPath, ...corridor.funnelPath, ...corridor.rubberPath, ...corridor.splinePath,
+    ...(corridor.obstacles || []).flatMap(([minX, minY, maxX, maxY]) => [[minX, minY], [maxX, maxY]])
   ];
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (const [x, y] of allPts) {
@@ -233,6 +285,21 @@ function render() {
 
   const transform = computeTransform(corridor);
 
+  // Obstacles (only present for the generated-level corridor).
+  if (corridor.obstacles && corridor.obstacles.length) {
+    ctx.fillStyle = 'rgba(255,255,255,0.10)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = 1;
+    for (const [minX, minY, maxX, maxY] of corridor.obstacles) {
+      const [x0, y0] = transform([minX, minY]);
+      const [x1, y1] = transform([maxX, maxY]);
+      const left = Math.min(x0, x1), top = Math.min(y0, y1);
+      const w = Math.abs(x1 - x0), h = Math.abs(y1 - y0);
+      ctx.fillRect(left, top, w, h);
+      ctx.strokeRect(left, top, w, h);
+    }
+  }
+
   // Corridor walls: chain the left edges together, and the right edges
   // together, from start through each portal to goal.
   const leftWall = [corridor.start, ...corridor.portals.map(p => p[0]), corridor.goal];
@@ -252,16 +319,18 @@ function render() {
     ctx.stroke();
   }
 
-  const funnelColor = getComputedStyle(document.documentElement).getPropertyValue('--funnel');
-  const rubberColor = getComputedStyle(document.documentElement).getPropertyValue('--rubber');
-  const splineColor = getComputedStyle(document.documentElement).getPropertyValue('--spline');
+  // Draw whichever method(s) are selected.
+  const visibleMethods = activeMethod === 'all'
+    ? METHODS.filter(m => m.key !== 'all')
+    : METHODS.filter(m => m.key === activeMethod);
 
-  drawPath(corridor.splinePath, transform, splineColor, 2.5, true);
-  drawPath(corridor.rubberPath, transform, rubberColor, 2.5, false);
-  drawPath(corridor.funnelPath, transform, funnelColor, 3, false);
-
-  drawPoints(corridor.funnelPath, transform, funnelColor, 4);
-  drawPoints(corridor.rubberPath, transform, rubberColor, 3);
+  for (const m of visibleMethods) {
+    const color = getComputedStyle(document.documentElement).getPropertyValue(m.color);
+    drawPath(corridor[m.field], transform, color, m.width, m.dashed);
+    if (m.key === 'funnel' || m.key === 'rubber') {
+      drawPoints(corridor[m.field], transform, color, m.key === 'funnel' ? 4 : 3);
+    }
+  }
 
   // Start / goal markers.
   const point = getComputedStyle(document.documentElement).getPropertyValue('--point');
@@ -273,30 +342,50 @@ function render() {
     ctx.fill();
   }
 
+  // Agent marker: only makes sense when a single method is selected.
+  if (activeMethod !== 'all') {
+    const method = METHODS.find(m => m.key === activeMethod);
+    const pts = corridor[method.field];
+    const worldPt = pointAtFraction(pts, agentT);
+    if (worldPt) {
+      const [ax, ay] = transform(worldPt);
+      const agentColor = getComputedStyle(document.documentElement).getPropertyValue('--agent');
+      ctx.fillStyle = agentColor;
+      ctx.beginPath();
+      ctx.arc(ax, ay, 7, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+  }
+
   renderMetrics(corridor);
 }
 
 function renderMetrics(corridor) {
   const rows = [
-    ['Funnel', corridor.funnelPath],
-    ['Rubber-band', corridor.rubberPath],
-    ['Catmull-Rom', corridor.splinePath],
+    ['raw', 'Raw (unsmoothed)', corridor.rawPath, null],
+    ['funnel', 'Funnel', corridor.funnelPath, corridor.timingUs ? corridor.timingUs.funnel : null],
+    ['rubber', 'Rubber-band', corridor.rubberPath, corridor.timingUs ? corridor.timingUs.rubber : null],
+    ['spline', 'Catmull-Rom', corridor.splinePath, corridor.timingUs ? corridor.timingUs.spline : null],
   ];
   const table = document.getElementById('metricsTable');
   table.innerHTML = `
-    <tr><th>Method</th><th>Points</th><th>Length</th><th>Turns</th></tr>
-    ${rows.map(([name, pts]) => `
-      <tr>
+    <tr><th>Method</th><th>Points</th><th>Length</th><th>Turns</th><th>Compute time</th></tr>
+    ${rows.map(([key, name, pts, timeUs]) => `
+      <tr class="${key === activeMethod ? 'highlight' : ''}">
         <td>${name}</td>
         <td>${pts.length}</td>
         <td>${pathLength(pts).toFixed(3)}</td>
         <td>${turnCount(pts)}</td>
+        <td>${timeUs != null ? timeUs.toFixed(2) + ' µs' : '—'}</td>
       </tr>
     `).join('')}
   `;
 }
 
-function buildButtons() {
+function buildCorridorButtons() {
   const container = document.getElementById('corridorButtons');
   container.innerHTML = '';
   corridors.forEach((c, i) => {
@@ -305,11 +394,73 @@ function buildButtons() {
     if (i === activeIndex) btn.classList.add('active');
     btn.onclick = () => {
       activeIndex = i;
-      buildButtons();
+      agentT = 0;
+      buildCorridorButtons();
       render();
     };
     container.appendChild(btn);
   });
+}
+
+function buildMethodButtons() {
+  const container = document.getElementById('methodButtons');
+  container.innerHTML = '';
+  METHODS.forEach(m => {
+    const btn = document.createElement('button');
+    btn.textContent = m.label;
+    if (m.key === activeMethod) btn.classList.add('active');
+    btn.onclick = () => {
+      activeMethod = m.key;
+      agentT = 0;
+      buildMethodButtons();
+      updatePlayButtonVisibility();
+      render();
+    };
+    container.appendChild(btn);
+  });
+}
+
+function buildPlayButton() {
+  const container = document.getElementById('playButtons');
+  container.innerHTML = '';
+  const btn = document.createElement('button');
+  btn.className = 'play';
+  btn.textContent = agentPlaying ? '⏸ Pause agent' : '▶ Play agent along path';
+  btn.onclick = () => {
+    if (agentT >= 1) agentT = 0;
+    agentPlaying = !agentPlaying;
+    lastFrameTime = null;
+    buildPlayButton();
+    if (agentPlaying) requestAnimationFrame(tick);
+  };
+  container.appendChild(btn);
+}
+
+function updatePlayButtonVisibility() {
+  document.getElementById('playButtons').style.display = activeMethod === 'all' ? 'none' : 'flex';
+  if (activeMethod === 'all') { agentPlaying = false; buildPlayButton(); }
+}
+
+function tick(now) {
+  if (!agentPlaying) return;
+  if (lastFrameTime == null) lastFrameTime = now;
+  const dt = (now - lastFrameTime) / 1000;
+  lastFrameTime = now;
+
+  const corridor = corridors[activeIndex];
+  const method = METHODS.find(m => m.key === activeMethod);
+  const pts = corridor ? corridor[method.field] : [];
+  const total = pathLength(pts);
+  if (total > 1e-9) {
+    agentT += (AGENT_SPEED_UNITS_PER_SEC * dt) / total;
+  }
+  if (agentT >= 1) {
+    agentT = 1;
+    agentPlaying = false;
+    buildPlayButton();
+  }
+  render();
+  if (agentPlaying) requestAnimationFrame(tick);
 }
 
 fetch('paths.json')
@@ -320,7 +471,10 @@ fetch('paths.json')
   .then(data => {
     corridors = data;
     statusEl.textContent = '';
-    buildButtons();
+    buildCorridorButtons();
+    buildMethodButtons();
+    buildPlayButton();
+    updatePlayButtonVisibility();
     render();
   })
   .catch(err => {

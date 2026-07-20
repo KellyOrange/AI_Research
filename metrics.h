@@ -1,7 +1,7 @@
 #pragma once
 
 #include <vector>
-#include "Vec2.h"
+#include "vec2.h"
 
 // Total length of a path (sum of segment lengths).
 float PathLength(const std::vector<Vec2>& path);

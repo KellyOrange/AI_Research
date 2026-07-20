@@ -32,6 +32,10 @@ void ExportToJSON(const std::string& filepath, const std::vector<CorridorResult>
         }
         out << "],\n";
 
+        out << "    \"rawPath\": ";
+        WritePointArray(out, cr.rawPath);
+        out << ",\n";
+
         out << "    \"funnelPath\": ";
         WritePointArray(out, cr.funnelPath);
         out << ",\n";
@@ -42,7 +46,13 @@ void ExportToJSON(const std::string& filepath, const std::vector<CorridorResult>
 
         out << "    \"splinePath\": ";
         WritePointArray(out, cr.splinePath);
-        out << "\n";
+        out << ",\n";
+
+        out << "    \"timingUs\": {\n";
+        out << "      \"funnel\": " << cr.funnelTimeUs << ",\n";
+        out << "      \"rubber\": " << cr.rubberTimeUs << ",\n";
+        out << "      \"spline\": " << cr.splineTimeUs << "\n";
+        out << "    }\n";
 
         out << "  }";
         if (c + 1 < corridors.size()) out << ",";

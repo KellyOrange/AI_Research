@@ -1,8 +1,8 @@
 #pragma once
 
 #include <vector>
-#include "Vec2.h"
-#include "Portal.h"
+#include "vec2.h"
+#include "portal.h"
 
 // Classic Simple Stupid Funnel Algorithm (Mikko Mononen's formulation).
 // Input: start point, goal point, and the portals crossed in order.
