@@ -1,6 +1,7 @@
 #include <cstdio>
 #include <vector>
 #include <chrono>
+#include <algorithm>
 
 #include "vec2.h"
 #include "portal.h"
@@ -9,34 +10,52 @@
 #include "jsonExport.h"
 #include "navMesh.h"
 
+// Times fn() by running it repeatedly and keeping the best (fastest) run.
+// A single untimed call first warms up caches/allocator/page faults so
+// that cold-start noise doesn't dominate small, fast corridors.
+template <typename Fn>
+double TimeUs(Fn&& fn, int reps = 100) {
+    using Clock = std::chrono::high_resolution_clock;
+    fn(); // warm-up, untimed
+    double best = 1e18;
+    for (int k = 0; k < reps; ++k) {
+        auto t0 = Clock::now();
+        fn();
+        auto t1 = Clock::now();
+        double us = std::chrono::duration<double, std::micro>(t1 - t0).count();
+        best = std::min(best, us);
+    }
+    return best;
+}
+
 CorridorResult RunCorridor(const char* corridorName, const Vec2& start, const Vec2& goal,
                             const std::vector<Portal>& portals, const std::vector<Rect>& obstacles = {}) {
-    using Clock = std::chrono::high_resolution_clock;
-
     printf("=========================================\n");
     printf("Corridor: %s\n", corridorName);
     printf("=========================================\n");
 
-    auto t0 = Clock::now();
+    // Compute each path once -- these are the results that get exported/drawn.
     std::vector<FunnelStep> funnelTrace;
     std::vector<Vec2> funnelPath = FunnelWithTrace(start, goal, portals, funnelTrace);
-    auto t1 = Clock::now();
-
     std::vector<Vec2> rubberPath = RubberBand(start, goal, portals);
-    auto t2 = Clock::now();
-
-    std::vector<Vec2> rawPath = RawPathFromPortals(start, goal, portals);
+    std::vector<Vec2> rawPath    = RawPathFromPortals(start, goal, portals);
     std::vector<Vec2> splinePath = CatmullRom(rawPath);
-    auto t3 = Clock::now();
+
+    // Time each method in isolation, warm-up + best-of-100, so cold-start
+    // effects (page faults, cache warmup, allocator init) on the first
+    // corridor don't produce misleadingly huge numbers.
+    double funnelUs = TimeUs([&] { volatile auto p = Funnel(start, goal, portals); (void)p; });
+    double rubberUs = TimeUs([&] { volatile auto p = RubberBand(start, goal, portals); (void)p; });
+    double splineUs = TimeUs([&] { volatile auto p = CatmullRom(rawPath); (void)p; });
 
     PrintPath("Funnel (string-pulling)", funnelPath);
     PrintPath("Rubber-banding", rubberPath);
     PrintPath("Catmull-Rom spline", splinePath);
 
-    printf("Timing (microseconds):\n");
-    printf("  Funnel:      %.2f us\n", std::chrono::duration<double, std::micro>(t1 - t0).count());
-    printf("  RubberBand:  %.2f us\n", std::chrono::duration<double, std::micro>(t2 - t1).count());
-    printf("  CatmullRom:  %.2f us\n\n", std::chrono::duration<double, std::micro>(t3 - t2).count());
+    printf("Timing (microseconds, best of 100):\n");
+    printf("  Funnel:      %.2f us\n", funnelUs);
+    printf("  RubberBand:  %.2f us\n", rubberUs);
+    printf("  CatmullRom:  %.2f us\n\n", splineUs);
 
     CorridorResult result;
     result.name = corridorName;
@@ -49,9 +68,9 @@ CorridorResult RunCorridor(const char* corridorName, const Vec2& start, const Ve
     result.splinePath = splinePath;
     result.obstacles = obstacles;
     result.funnelTrace = funnelTrace;
-    result.funnelTimeUs = std::chrono::duration<double, std::micro>(t1 - t0).count();
-    result.rubberTimeUs = std::chrono::duration<double, std::micro>(t2 - t1).count();
-    result.splineTimeUs = std::chrono::duration<double, std::micro>(t3 - t2).count();
+    result.funnelTimeUs = funnelUs;
+    result.rubberTimeUs = rubberUs;
+    result.splineTimeUs = splineUs;
     return result;
 }
 

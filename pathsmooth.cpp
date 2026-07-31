@@ -12,6 +12,12 @@ std::vector<Vec2> FunnelWithTrace(const Vec2& start, const Vec2& goal, const std
     std::vector<Vec2> path;
     path.push_back(start);
 
+    // Restarts can re-commit the same vertex; skip exact duplicates.
+    auto commitPoint = [&path](const Vec2& p) {
+        const Vec2& b = path.back();
+        if (b.x != p.x || b.y != p.y) path.push_back(p);
+    };
+
     Vec2 apex = start;
     Vec2 left = start;
     Vec2 right = start;
@@ -28,14 +34,17 @@ std::vector<Vec2> FunnelWithTrace(const Vec2& start, const Vec2& goal, const std
         Vec2 committedVertex = {};
 
         // --- update right side of the funnel ---
-        if (Cross(apex, right, newRight) <= 0.0f) {
-            if ((apex.x == right.x && apex.y == right.y) || Cross(apex, left, newRight) > 0.0f) {
+        // With Cross(a,b,c) > 0 meaning "c is left of a->b" (y-up, CCW),
+        // the funnel's RIGHT boundary tightens when the new right endpoint
+        // is on or to the LEFT of the current apex->right ray (moving inward).
+        if (Cross(apex, right, newRight) >= 0.0f) {
+            if ((apex.x == right.x && apex.y == right.y) || Cross(apex, left, newRight) < 0.0f) {
                 right = newRight;
                 rightIndex = i;
             }
             else {
                 // Right crosses over left: apex moves to left, restart from there.
-                path.push_back(left);
+                commitPoint(left);
                 committed = true;
                 committedVertex = left;
                 apex = left;
@@ -45,8 +54,6 @@ std::vector<Vec2> FunnelWithTrace(const Vec2& start, const Vec2& goal, const std
                 leftIndex = apexIndex;
                 rightIndex = apexIndex;
 
-                // Portal index is capped at the real portal list size (goal
-                // portal doesn't exist in the caller's data) for reporting.
                 int reportIndex = (i < portals.size()) ? (int)i : (int)portals.size() - 1;
                 outTrace.push_back({ reportIndex, apex, left, right, committed, committedVertex });
 
@@ -56,13 +63,15 @@ std::vector<Vec2> FunnelWithTrace(const Vec2& start, const Vec2& goal, const std
         }
 
         // --- update left side of the funnel ---
-        if (Cross(apex, left, newLeft) >= 0.0f) {
-            if ((apex.x == left.x && apex.y == left.y) || Cross(apex, right, newLeft) < 0.0f) {
+        // Mirror image: the LEFT boundary tightens when the new left endpoint
+        // is on or to the RIGHT of the current apex->left ray (moving inward).
+        if (Cross(apex, left, newLeft) <= 0.0f) {
+            if ((apex.x == left.x && apex.y == left.y) || Cross(apex, right, newLeft) > 0.0f) {
                 left = newLeft;
                 leftIndex = i;
             }
             else {
-                path.push_back(right);
+                commitPoint(right);
                 committed = true;
                 committedVertex = right;
                 apex = right;
@@ -84,7 +93,7 @@ std::vector<Vec2> FunnelWithTrace(const Vec2& start, const Vec2& goal, const std
         outTrace.push_back({ reportIndex, apex, left, right, committed, committedVertex });
     }
 
-    path.push_back(goal);
+    commitPoint(goal);
     return path;
 }
 
@@ -111,8 +120,6 @@ std::vector<Vec2> RubberBand(const Vec2& start, const Vec2& goal, const std::vec
             path[i].x += (avg.x - path[i].x) * pullFactor;
             path[i].y += (avg.y - path[i].y) * pullFactor;
 
-            // Clamp back onto the corridor's portal segment (index i-1
-            // corresponds to portals[i-1] since path[0] is start).
             if (i - 1 < portals.size()) {
                 const Portal& port = portals[i - 1];
                 float dx = port.right.x - port.left.x;
@@ -135,7 +142,6 @@ std::vector<Vec2> CatmullRom(const std::vector<Vec2>& raw, int samplesPerSegment
     std::vector<Vec2> curve;
     if (raw.size() < 2) return raw;
 
-    // Duplicate first/last points so every real segment has 4 control points.
     std::vector<Vec2> pts;
     pts.push_back(raw.front());
     pts.insert(pts.end(), raw.begin(), raw.end());
