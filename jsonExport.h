@@ -5,6 +5,7 @@
 #include "vec2.h"
 #include "portal.h"
 #include "rect.h"
+#include "pathsmooth.h" // for FunnelStep
 
 // One corridor's worth of data: the portals plus each method's smoothed path.
 struct CorridorResult {
@@ -17,6 +18,7 @@ struct CorridorResult {
     std::vector<Vec2> rubberPath;
     std::vector<Vec2> splinePath;
     std::vector<Rect> obstacles;
+    std::vector<FunnelStep> funnelTrace; // step-by-step funnel construction, for visualization
 
     // Timing in microseconds for each smoothing method (measured in main.cpp).
     double funnelTimeUs = 0.0;

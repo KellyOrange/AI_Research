@@ -1,4 +1,4 @@
-#include "JsonExport.h"
+#include "jsonExport.h"
 #include <fstream>
 #include <sstream>
 
@@ -47,6 +47,29 @@ void ExportToJSON(const std::string& filepath, const std::vector<CorridorResult>
         out << "    \"splinePath\": ";
         WritePointArray(out, cr.splinePath);
         out << ",\n";
+
+        out << "    \"obstacles\": [";
+        for (size_t i = 0; i < cr.obstacles.size(); ++i) {
+            const Rect& r = cr.obstacles[i];
+            out << "[" << r.minX << "," << r.minY << "," << r.maxX << "," << r.maxY << "]";
+            if (i + 1 < cr.obstacles.size()) out << ",";
+        }
+        out << "],\n";
+
+        out << "    \"funnelTrace\": [\n";
+        for (size_t i = 0; i < cr.funnelTrace.size(); ++i) {
+            const FunnelStep& s = cr.funnelTrace[i];
+            out << "      {\"portalIndex\":" << s.portalIndex
+                << ",\"apex\":[" << s.apex.x << "," << s.apex.y << "]"
+                << ",\"left\":[" << s.left.x << "," << s.left.y << "]"
+                << ",\"right\":[" << s.right.x << "," << s.right.y << "]"
+                << ",\"committed\":" << (s.committedPoint ? "true" : "false")
+                << ",\"committedVertex\":[" << s.committedVertex.x << "," << s.committedVertex.y << "]"
+                << "}";
+            if (i + 1 < cr.funnelTrace.size()) out << ",";
+            out << "\n";
+        }
+        out << "    ],\n";
 
         out << "    \"timingUs\": {\n";
         out << "      \"funnel\": " << cr.funnelTimeUs << ",\n";

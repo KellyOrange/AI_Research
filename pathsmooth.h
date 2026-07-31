@@ -9,6 +9,22 @@
 // Output: the smoothed (taut) path through the corridor.
 std::vector<Vec2> Funnel(const Vec2& start, const Vec2& goal, const std::vector<Portal>& portals);
 
+// One frame of the funnel algorithm's internal state, recorded each
+// time it processes a portal -- used to animate/visualize exactly how
+// the apex/left/right rays narrow and commit path points over time.
+struct FunnelStep {
+    int portalIndex;       // which portal (index into the input list) this step processed
+    Vec2 apex, left, right;  // funnel state after this step
+    bool committedPoint;     // true if a new path vertex was locked in this step
+    Vec2 committedVertex;    // the vertex that was locked in, if committedPoint
+};
+
+// Same algorithm as Funnel(), but also records a FunnelStep for every
+// portal processed (including restarts), so the caller can play back
+// exactly how the funnel narrowed and pulled the path taut over time.
+std::vector<Vec2> FunnelWithTrace(const Vec2& start, const Vec2& goal, const std::vector<Portal>& portals,
+                                   std::vector<FunnelStep>& outTrace);
+
 // Builds a "raw" waypoint path from the portal sequence, the way a
 // grid-based pathfinder would hand you a path (start -> each portal's
 // midpoint -> goal). This is the common input the other two methods

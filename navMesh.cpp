@@ -1,10 +1,10 @@
-#include "NavMesh.h"
+#include "navMesh.h"
 #include <map>
 #include <queue>
 #include <cmath>
 #include <limits>
 #include <algorithm>
-#include "Vec2.h" // for Cross()
+#include "vec2.h" // for Cross()
 
 // A grid-space vertex, used only while building adjacency (exact
 // integer coordinates avoid any floating point matching issues).
@@ -139,7 +139,7 @@ std::vector<int> FindTrianglePath(const NavMesh& mesh, int startTri, int goalTri
 
 std::vector<Portal> ExtractPortals(const NavMesh& mesh, const std::vector<int>& triPath, const Vec2& start) {
     std::vector<Portal> portals;
-    Vec2 prevPoint = start;
+    (void)start; // no longer needed -- left/right is now derived from mesh winding alone.
 
     for (size_t i = 0; i + 1 < triPath.size(); ++i) {
         int t = triPath[i];
@@ -153,23 +153,21 @@ std::vector<Portal> ExtractPortals(const NavMesh& mesh, const std::vector<int>& 
         }
         if (edgeIndex == -1) continue; // shouldn't happen if triPath is valid
 
+        // Every triangle is stored counter-clockwise, so walking this
+        // edge in the order it's stored in triangle t (a -> b) always
+        // keeps t's interior on the left. That means, from the point of
+        // view of someone walking forward out of t and into nextT, b is
+        // always the LEFT side of the doorway and a is always the RIGHT
+        // side -- a fixed rule from mesh topology alone, independent of
+        // path direction. (The previous direction-based heuristic here
+        // was unreliable and produced a corrupted, oscillating path.)
         Vec2 a = tri.v[edgeIndex];
         Vec2 b = tri.v[(edgeIndex + 1) % 3];
-        Vec2 mid = { (a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f };
 
-        // Decide left/right based on travel direction from prevPoint to
-        // this portal's midpoint: whichever endpoint is left of that
-        // direction (per Cross) becomes portal.left.
         Portal portal;
-        if (Cross(prevPoint, mid, a) >= 0.0f) {
-            portal.left = a;
-            portal.right = b;
-        } else {
-            portal.left = b;
-            portal.right = a;
-        }
+        portal.left = b;
+        portal.right = a;
         portals.push_back(portal);
-        prevPoint = mid;
     }
 
     return portals;

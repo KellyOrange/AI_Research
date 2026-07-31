@@ -1,6 +1,14 @@
 #include "pathsmooth.h"
 
 std::vector<Vec2> Funnel(const Vec2& start, const Vec2& goal, const std::vector<Portal>& portals) {
+    std::vector<FunnelStep> discardedTrace;
+    return FunnelWithTrace(start, goal, portals, discardedTrace);
+}
+
+std::vector<Vec2> FunnelWithTrace(const Vec2& start, const Vec2& goal, const std::vector<Portal>& portals,
+                                   std::vector<FunnelStep>& outTrace) {
+    outTrace.clear();
+
     std::vector<Vec2> path;
     path.push_back(start);
 
@@ -13,9 +21,11 @@ std::vector<Vec2> Funnel(const Vec2& start, const Vec2& goal, const std::vector<
     std::vector<Portal> pts = portals;
     pts.push_back({ goal, goal });
 
-    for (size_t i = 1; i < pts.size(); ++i) {
+    for (size_t i = 0; i < pts.size(); ++i) {
         const Vec2& newLeft = pts[i].left;
         const Vec2& newRight = pts[i].right;
+        bool committed = false;
+        Vec2 committedVertex = {};
 
         // --- update right side of the funnel ---
         if (Cross(apex, right, newRight) <= 0.0f) {
@@ -26,12 +36,20 @@ std::vector<Vec2> Funnel(const Vec2& start, const Vec2& goal, const std::vector<
             else {
                 // Right crosses over left: apex moves to left, restart from there.
                 path.push_back(left);
+                committed = true;
+                committedVertex = left;
                 apex = left;
                 apexIndex = leftIndex;
                 left = apex;
                 right = apex;
                 leftIndex = apexIndex;
                 rightIndex = apexIndex;
+
+                // Portal index is capped at the real portal list size (goal
+                // portal doesn't exist in the caller's data) for reporting.
+                int reportIndex = (i < portals.size()) ? (int)i : (int)portals.size() - 1;
+                outTrace.push_back({ reportIndex, apex, left, right, committed, committedVertex });
+
                 i = apexIndex;
                 continue;
             }
@@ -45,16 +63,25 @@ std::vector<Vec2> Funnel(const Vec2& start, const Vec2& goal, const std::vector<
             }
             else {
                 path.push_back(right);
+                committed = true;
+                committedVertex = right;
                 apex = right;
                 apexIndex = rightIndex;
                 left = apex;
                 right = apex;
                 leftIndex = apexIndex;
                 rightIndex = apexIndex;
+
+                int reportIndex = (i < portals.size()) ? (int)i : (int)portals.size() - 1;
+                outTrace.push_back({ reportIndex, apex, left, right, committed, committedVertex });
+
                 i = apexIndex;
                 continue;
             }
         }
+
+        int reportIndex = (i < portals.size()) ? (int)i : (int)portals.size() - 1;
+        outTrace.push_back({ reportIndex, apex, left, right, committed, committedVertex });
     }
 
     path.push_back(goal);

@@ -2,8 +2,8 @@
 #include <vector>
 #include <chrono>
 
-#include "Vec2.h"
-#include "Portal.h"
+#include "vec2.h"
+#include "portal.h"
 #include "pathsmooth.h"
 #include "metrics.h"
 #include "jsonExport.h"
@@ -18,7 +18,8 @@ CorridorResult RunCorridor(const char* corridorName, const Vec2& start, const Ve
     printf("=========================================\n");
 
     auto t0 = Clock::now();
-    std::vector<Vec2> funnelPath = Funnel(start, goal, portals);
+    std::vector<FunnelStep> funnelTrace;
+    std::vector<Vec2> funnelPath = FunnelWithTrace(start, goal, portals, funnelTrace);
     auto t1 = Clock::now();
 
     std::vector<Vec2> rubberPath = RubberBand(start, goal, portals);
@@ -47,6 +48,7 @@ CorridorResult RunCorridor(const char* corridorName, const Vec2& start, const Ve
     result.rubberPath = rubberPath;
     result.splinePath = splinePath;
     result.obstacles = obstacles;
+    result.funnelTrace = funnelTrace;
     result.funnelTimeUs = std::chrono::duration<double, std::micro>(t1 - t0).count();
     result.rubberTimeUs = std::chrono::duration<double, std::micro>(t2 - t1).count();
     result.splineTimeUs = std::chrono::duration<double, std::micro>(t3 - t2).count();
@@ -104,17 +106,19 @@ int main() {
     // corridors above. This is the actual demo pipeline end-to-end.
     // ---------------------------------------------------------------
     {
-        float levelWidth = 20.0f, levelHeight = 14.0f, cellSize = 1.0f;
+        float levelWidth = 20.0f, levelHeight = 14.0f, cellSize = 2.0f;
 
         // Narrow corridor near the start, a big OPEN ROOM in the middle
         // (no obstacles at all there), then another narrow corridor near
-        // the goal. This contrast is the point: the funnel algorithm
-        // should zigzag through the narrow sections (no room to cut
-        // corners) but cut a clean diagonal shortcut through the open
-        // room, while rubber-band/spline behave similarly in both.
+        // the goal. Walls are sized/positioned to align cleanly with the
+        // 2-unit grid tiles, so tiles (and portals) stay wide even right
+        // next to the walls. A 1-unit tile size caps every portal at 1
+        // unit wide EVERYWHERE, even in open space -- which is why the
+        // funnel algorithm had no real room to cut corners before, even
+        // once the portal left/right bug was fixed.
         std::vector<Rect> obstacles = {
-            { 3.0f, 0.0f, 4.0f, 9.0f },    // narrow corridor wall near start
-            { 16.0f, 5.0f, 17.0f, 14.0f }, // narrow corridor wall near goal
+            { 4.0f, 0.0f, 6.0f, 10.0f },   // narrow corridor wall near start
+            { 16.0f, 4.0f, 18.0f, 14.0f }, // narrow corridor wall near goal
         };
 
         NavMesh mesh = BuildGridNavMesh(levelWidth, levelHeight, cellSize, obstacles);
